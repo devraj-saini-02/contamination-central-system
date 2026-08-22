@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import ssl
 from typing import Awaitable, Callable, Optional
 
 import asyncio_mqtt as aiomqtt
@@ -36,6 +37,7 @@ class MqttService:
                     username=self._settings.mqtt_username or None,
                     password=self._settings.mqtt_password or None,
                     client_id="central-system-cc",
+                    tls_context=ssl.create_default_context() if self._settings.mqtt_use_tls else None,
                 ) as client:
                     self._client = client
                     for topic, qos in self._subscriptions:

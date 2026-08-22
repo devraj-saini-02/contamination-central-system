@@ -64,13 +64,37 @@ and point `DATABASE_URL` / `MQTT_BROKER_HOST` at them — nothing in the app is 
   returns the response verbatim. It exists only so `dashboard/` has a single API base URL to
   call. It touches no database table, no MQTT client, and no tracing code — everything else in
   this service has zero awareness that a simulation exists.
-- **CORS is wide open** (`allow_origins=["*"]`). Fine for a local hackathon demo; tighten this
-  before any real deployment.
+- **CORS defaults to wide open** (`CORS_ALLOW_ORIGINS=*`). Fine for a local hackathon demo; set
+  it to your deployed dashboard's actual origin before going further than that.
 - **Mosquitto runs with anonymous access enabled** (see `mosquitto.conf`). Same caveat — local
-  demo only.
+  demo only; a cloud broker should use real credentials (`MQTT_USERNAME`/`MQTT_PASSWORD`) and
+  TLS (`MQTT_USE_TLS=true`).
 
 ## Tests
 
 ```bash
 pytest
 ```
+
+## Deploying (Render + Supabase)
+
+1. **Database**: create a Supabase project. From Project Settings → Database, copy the
+   connection string, swap `postgresql://` for `postgresql+asyncpg://`, and append
+   `?ssl=require`. Use the **direct connection or Session pooler** — not the Transaction pooler
+   (port 6543): asyncpg's server-side prepared statements break under PgBouncer's transaction
+   mode.
+2. **MQTT broker**: this service and `node/` need one in common. A free
+   [HiveMQ Cloud](https://www.hivemq.com/mqtt-cloud-broker/) cluster works well — it gives you a
+   host, port 8883, and credentials. Set `MQTT_USE_TLS=true` for any cloud broker.
+3. **Render**: New → Web Service, connect this repo (root directory is this repo's root).
+   - Build command: `pip install -r requirements.txt`
+   - Start command: `alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+   - Instance type: at least **Starter** — the free tier spins down on idle, which kills the
+     persistent MQTT connection and the APScheduler jobs.
+   - Environment variables: everything in `.env.example`, with `DATABASE_URL` from step 1,
+     `MQTT_*` from step 2, `NODE_ORCHESTRATOR_URL` set to `node/`'s deployed URL (may need to
+     deploy `node/` first, or just come back and fill this in after), `PUBLIC_URL` set to this
+     service's own Render URL once you have it, and `CORS_ALLOW_ORIGINS` set to your dashboard's
+     Vercel/Netlify origin once you have it.
+4. Once deployed, hit `GET /health` to confirm it's up, then `GET /nodes` (empty list is
+   expected until `node/` registers something).

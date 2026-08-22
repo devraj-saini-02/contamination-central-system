@@ -45,11 +45,15 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="central-system", lifespan=lifespan)
 
-# Local hackathon demo only — dashboard/ is a browser app on a different origin/port. Tighten
-# this before any real deployment.
+# CORS_ALLOW_ORIGINS defaults to "*" for the local demo (dashboard/ is a browser app on a
+# different origin/port); set it to your deployed dashboard's actual origin(s), comma-separated,
+# once you have one -- a wildcard origin is fine for localhost, not for a public deployment.
+_cors_origins = (
+    ["*"] if settings.cors_allow_origins.strip() == "*" else [o.strip() for o in settings.cors_allow_origins.split(",") if o.strip()]
+)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )

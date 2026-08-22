@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     mqtt_broker_port: int = 1883
     mqtt_username: str = ""
     mqtt_password: str = ""
+    mqtt_use_tls: bool = False  # set true for a cloud broker (e.g. HiveMQ Cloud on 8883)
 
     retention_hours: int = 12
     baselining_period_seconds: int = 90
@@ -29,6 +30,16 @@ class Settings(BaseSettings):
     # real OTA flow) -- this service's own externally-reachable base URL.
     public_url: str = "http://localhost:8000"
     model_files_dir: str = str(REPO_ROOT / "model_files")
+
+    # Comma-separated list of origins dashboard/ is served from, e.g.
+    # "https://your-app.vercel.app,http://localhost:5173". "*" (the local-demo default) means
+    # any origin -- fine for a hackathon on localhost, not for a public deployment.
+    cors_allow_origins: str = "*"
+
+    # Sized down from what local concurrent-registration testing used, since managed Postgres
+    # free tiers (e.g. Supabase) cap total connections much lower than a local instance would.
+    db_pool_size: int = 5
+    db_max_overflow: int = 5
 
 
 @lru_cache
