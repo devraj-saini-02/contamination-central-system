@@ -3,12 +3,14 @@ import pytest
 
 from app.physics import (
     convolve_parent_flux_to_child_concentration,
+    convolve_parent_flux_to_child_instant,
     discharge,
     dispersion_coefficient,
     first_order_decay,
     gaussian_slug_concentration,
     hydraulic_radius,
     junction_expected_mass,
+    manning_level_from_discharge,
     manning_velocity,
     shear_velocity,
     streeter_phelps_deficit,
@@ -47,6 +49,20 @@ def test_travel_time_scales_inversely_with_speed():
     assert tau_slow == pytest.approx(200.0)
     assert tau_fast == pytest.approx(100.0)
     assert tau_fast < tau_slow
+
+
+def test_manning_level_from_discharge_round_trips_through_manning_velocity():
+    breadth, n, slope = 3.0, 0.014, 0.002
+    level_in = 0.35
+    v = manning_velocity(level_in, breadth, n, slope)
+    q = discharge(v, breadth, level_in)
+    level_out = manning_level_from_discharge(q, breadth, n, slope)
+    assert level_out == pytest.approx(level_in, rel=1e-6)
+
+
+def test_manning_level_from_discharge_zero_for_invalid_inputs():
+    assert manning_level_from_discharge(0.0, 3.0, 0.014, 0.002) == 0.0
+    assert manning_level_from_discharge(1.0, 3.0, 0.0, 0.002) == 0.0
 
 
 def test_travel_time_infinite_for_zero_speed():
@@ -112,6 +128,15 @@ def test_convolution_produces_nonzero_downstream_signal():
     assert len(child_conc) == n
     assert np.max(child_conc) > 0
     assert np.argmax(child_conc) > 10  # peak arrives after the injection index
+
+
+def test_convolve_instant_matches_full_convolution_last_element():
+    rng = np.random.default_rng(7)
+    flux = rng.uniform(0, 100, size=80)
+    dt = 30.0
+    full = convolve_parent_flux_to_child_concentration(flux, dt, 200.0, 3.0, 0.4, 1e-5, 2.0)
+    instant = convolve_parent_flux_to_child_instant(flux, dt, 200.0, 3.0, 0.4, 1e-5, 2.0)
+    assert instant == pytest.approx(full[-1], rel=1e-9)
 
 
 def test_junction_expected_mass_sums_parents_with_decay():

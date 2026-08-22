@@ -37,6 +37,36 @@ def manning_velocity(level_m: float, breadth_m: float, manning_n: float, slope: 
     return (1.0 / manning_n) * (r ** (2.0 / 3.0)) * (slope ** 0.5)
 
 
+def manning_level_from_discharge(
+    q_m3s: float, breadth_m: float, manning_n: float, slope: float, tol: float = 1e-7, max_iter: int = 60
+) -> float:
+    """Inverts Manning's equation by bisection (Q is monotonically increasing in level, so this
+    is well-posed) to solve for the level that carries a given discharge, using the exact same
+    hydraulic_radius formula manning_velocity/discharge use — not a wide-channel closed-form
+    shortcut, so this round-trips exactly with manning_velocity+discharge. Used where Q is known
+    first (e.g. accumulated from upstream inflows) and level/speed need to stay
+    Manning-consistent with it, rather than sampling level independently and deriving Q from
+    it."""
+    if q_m3s <= 0 or breadth_m <= 0 or manning_n <= 0 or slope <= 0:
+        return 0.0
+
+    def q_at(level: float) -> float:
+        return discharge(manning_velocity(level, breadth_m, manning_n, slope), breadth_m, level)
+
+    lo, hi = 1e-6, 50.0
+    while q_at(hi) < q_m3s and hi < 1e6:
+        hi *= 2
+    for _ in range(max_iter):
+        mid = (lo + hi) / 2
+        if q_at(mid) < q_m3s:
+            lo = mid
+        else:
+            hi = mid
+        if hi - lo < tol:
+            break
+    return (lo + hi) / 2
+
+
 def travel_time_s(length_m: float, speed_mps: float) -> float:
     """tau = L / v_avg. Recomputed per event from the current v, not a fixed constant."""
     if speed_mps <= 0:
@@ -127,6 +157,28 @@ def convolve_parent_flux_to_child_concentration(
     kernel = unit_mass_response_kernel(tau, x_m, dispersion_m2s, speed_mps, k_per_s, area_m2)
     conv = np.convolve(parent_flux_g_s, kernel, mode="full")[:n] * dt_s
     return conv
+
+
+def convolve_parent_flux_to_child_instant(
+    parent_flux_g_s: np.ndarray,
+    dt_s: float,
+    x_m: float,
+    dispersion_m2s: float,
+    speed_mps: float,
+    k_per_s: float,
+    area_m2: float,
+) -> float:
+    """The current-instant equivalent of convolve_parent_flux_to_child_concentration(...)[-1],
+    computed as a direct O(n) dot product against the kernel instead of a full O(n^2) array
+    convolution that would then discard everything but the last element. Mathematically
+    identical to the last element of the full convolution; this is the one a per-tick
+    simulation loop should call (node/simulator/world.py) when only "now" is needed."""
+    n = len(parent_flux_g_s)
+    if n == 0:
+        return 0.0
+    tau = np.arange(n, 0, -1) * dt_s  # oldest sample -> tau=n*dt_s, newest sample -> tau=dt_s
+    kernel = unit_mass_response_kernel(tau, x_m, dispersion_m2s, speed_mps, k_per_s, area_m2)
+    return float(np.dot(np.asarray(parent_flux_g_s, dtype=float), kernel) * dt_s)
 
 
 def junction_expected_mass(parent_masses_g: list[float], taus_s: list[float], k_per_s: float) -> float:
