@@ -25,6 +25,7 @@ class MqttService:
         self._on_message = on_message
         self._client: Optional[aiomqtt.Client] = None
         self._stopped = False
+        self._inflight: set[asyncio.Task] = set()
 
     async def run(self) -> None:
         while not self._stopped:
@@ -42,17 +43,31 @@ class MqttService:
                     logger.info("MQTT connected, subscribed to %s", [t for t, _ in self._subscriptions])
                     async with client.messages() as messages:
                         async for message in messages:
-                            try:
-                                await self._on_message(str(message.topic), message.payload)
-                            except Exception:
-                                logger.exception("error handling message on %s", message.topic)
+                            # Dispatch each message as its own task rather than awaiting
+                            # handlers sequentially. A handler that legitimately waits on
+                            # something else arriving over MQTT (e.g. a child's registration
+                            # retrying while its parent's own registration is still in flight —
+                            # see app/mqtt_ingestion.py _wait_for_parent) would otherwise starve
+                            # this very loop of the message it's waiting for: classic
+                            # self-inflicted head-of-line blocking.
+                            task = asyncio.create_task(self._run_handler(str(message.topic), message.payload))
+                            self._inflight.add(task)
+                            task.add_done_callback(self._inflight.discard)
             except aiomqtt.MqttError as e:
                 self._client = None
                 logger.warning("MQTT connection lost (%s), reconnecting in %ss", e, RECONNECT_DELAY_S)
                 await asyncio.sleep(RECONNECT_DELAY_S)
 
+    async def _run_handler(self, topic: str, payload: bytes) -> None:
+        try:
+            await self._on_message(topic, payload)
+        except Exception:
+            logger.exception("error handling message on %s", topic)
+
     def stop(self) -> None:
         self._stopped = True
+        for task in self._inflight:
+            task.cancel()
 
     async def publish(self, topic: str, payload: BaseModel | str | bytes, qos: int = 1, retain: bool = False) -> None:
         if self._client is None:

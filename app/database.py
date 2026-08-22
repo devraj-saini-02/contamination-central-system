@@ -8,7 +8,10 @@ class Base(DeclarativeBase):
     pass
 
 
-engine = create_async_engine(get_settings().database_url, echo=False, future=True)
+# pool sized generously above the max simulated fleet (spec: up to 25 nodes) since registration
+# can hold a connection open for a few seconds while retrying a not-yet-registered parent
+# (app/mqtt_ingestion.py _wait_for_parent) during a fully-concurrent simulation start
+engine = create_async_engine(get_settings().database_url, echo=False, future=True, pool_size=30, max_overflow=20)
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
 

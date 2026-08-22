@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 from sqlalchemy import select
@@ -25,6 +26,25 @@ logger = logging.getLogger(__name__)
 # on-demand trace without this module importing the tracing package (avoids a circular import:
 # the tracing engine reads Alert/SummaryWindow rows, this module writes them).
 on_alert_trigger_tracing = None
+
+
+PARENT_WAIT_RETRIES = 8
+PARENT_WAIT_DELAY_S = 0.5
+
+
+async def _wait_for_parent(session, parent_id: str) -> Node | None:
+    """Nodes register concurrently (orchestrator starts every Virtual Node's registration at
+    once), so a child's manifest can arrive before its own parent has finished registering — a
+    real fleet wouldn't guarantee power-on order either. Retry briefly instead of silently
+    dropping the edge on a same-instant race; session.get() issues a fresh query each call, so
+    this sees the parent's row as soon as its own registration transaction commits."""
+    for attempt in range(PARENT_WAIT_RETRIES):
+        parent = await session.get(Node, parent_id)
+        if parent is not None:
+            return parent
+        if attempt < PARENT_WAIT_RETRIES - 1:
+            await asyncio.sleep(PARENT_WAIT_DELAY_S)
+    return None
 
 
 async def resolve_node_id(session, manifest: RegistrationManifest) -> str:
@@ -82,9 +102,9 @@ async def process_registration(manifest: RegistrationManifest) -> RegistrationAc
 
         assigned_parent_ids: list[str] = []
         for parent_id in manifest.claimed_parent_ids:
-            parent = await session.get(Node, parent_id)
+            parent = await _wait_for_parent(session, parent_id)
             if parent is None:
-                logger.warning("register %s claims unknown parent %s; skipping edge", node_id, parent_id)
+                logger.warning("register %s claims unknown parent %s (gave up waiting); skipping edge", node_id, parent_id)
                 continue
             existing_edge = (
                 await session.execute(
