@@ -276,7 +276,9 @@ async def classify_cause(
     }
 
 
-async def record_incident_candidate(session: AsyncSession, contaminant_id: str, node_id: str, cause: dict, confidence: float) -> Incident:
+async def record_incident_candidate(
+    session: AsyncSession, contaminant_id: str, node_id: str, cause: dict, confidence: float, t_start: datetime, t_end: datetime
+) -> Incident:
     """Merges into any still-open (NEW/ONGOING/ESCALATING) incident for this contaminant rather
     than filtering by recency: Incident.created_at/updated_at are real wall-clock time
     (server_default=func.now()) while every other timestamp this engine reasons about is
@@ -297,7 +299,10 @@ async def record_incident_candidate(session: AsyncSession, contaminant_id: str, 
     cause_entry = {**cause, "node_id": node_id, "confidence": confidence}
 
     if existing is None:
-        incident = Incident(status=IncidentStatus.NEW, contaminant_id=contaminant_id, candidate_causes=[cause_entry])
+        incident = Incident(
+            status=IncidentStatus.NEW, contaminant_id=contaminant_id, candidate_causes=[cause_entry],
+            window_t_start=t_start, window_t_end=t_end,
+        )
         session.add(incident)
         await session.flush()
     else:
@@ -306,6 +311,8 @@ async def record_incident_candidate(session: AsyncSession, contaminant_id: str, 
         causes.append(cause_entry)
         causes.sort(key=lambda c: c.get("confidence", 0.0), reverse=True)
         incident.candidate_causes = causes
+        incident.window_t_start = min(incident.window_t_start, t_start) if incident.window_t_start else t_start
+        incident.window_t_end = max(incident.window_t_end, t_end) if incident.window_t_end else t_end
         if incident.status == IncidentStatus.NEW:
             incident.status = IncidentStatus.ONGOING
 
@@ -437,7 +444,7 @@ async def run_tracing(contaminant_id: str, window_seconds: Optional[float] = Non
             if abs(u) > 2 * sigma_u:
                 cause = await classify_cause(session, u, m_observed, m_expected, node_id, parent_contribs, contaminant_id)
                 confidence = _confidence(u, sigma_u)
-                incident = await record_incident_candidate(session, contaminant_id, node_id, cause, confidence)
+                incident = await record_incident_candidate(session, contaminant_id, node_id, cause, confidence, t_start, t_end)
                 incidents.append(incident)
             else:
                 for e in edges_in:

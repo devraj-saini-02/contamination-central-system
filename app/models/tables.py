@@ -143,6 +143,12 @@ class Incident(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
     candidate_causes: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
+    # The tracing run's actual [t_start, t_end] (simulated time — see app/tracing/engine.py),
+    # widened on each merge (app/mqtt_ingestion.py record_incident_candidate). Used by
+    # GET /incidents/{id}/timeseries (§4.5) to know what window to query — central-system has no
+    # clock of its own, so this can't be derived from created_at/updated_at (real wall-clock).
+    window_t_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    window_t_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     nodes: Mapped[list["IncidentNode"]] = relationship(
         back_populates="incident", cascade="all, delete-orphan"
