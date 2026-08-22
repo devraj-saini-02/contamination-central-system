@@ -76,11 +76,6 @@ class IncidentDetailOut(IncidentOut):
     node_ids: list[str]
 
 
-class TraceRequest(BaseModel):
-    contaminant_id: str
-    window_seconds: Optional[int] = None
-
-
 class NodeTimeseriesPoint(BaseModel):
     t: datetime
     node_id: str
