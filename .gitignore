@@ -8,6 +8,7 @@ venv/
 .mypy_cache/
 .DS_Store
 pgdata/
+model_files/
 *.log
 .coverage
 htmlcov/

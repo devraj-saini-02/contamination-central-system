@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -10,6 +11,7 @@ from app.models import Alert, ContaminantReadingRow, Edge, ModelVersionRow, Node
 from app.mqtt_service import MqttService
 from app.mqtt_topics import (
     TOPIC_ALERT_SUB,
+    TOPIC_MODEL_ACK_SUB,
     TOPIC_REGISTER_SUB,
     TOPIC_STATUS_SUB,
     TOPIC_SUMMARY_SUB,
@@ -17,7 +19,7 @@ from app.mqtt_topics import (
 )
 from app.registry import get_registry
 from app.scheduler import schedule_baselining_flip
-from app.schemas import AlertPayload, RegistrationAck, RegistrationManifest, SummaryPayload
+from app.schemas import AlertPayload, ModelUpdateAck, RegistrationAck, RegistrationManifest, SummaryPayload
 from app.topology import estimate_edge_geometry
 
 logger = logging.getLogger(__name__)
@@ -255,6 +257,54 @@ async def handle_status(node_id: str, raw_payload: bytes) -> None:
             await session.commit()
 
 
+async def handle_model_ack(raw_payload: bytes) -> None:
+    ack = ModelUpdateAck.model_validate_json(raw_payload)
+    async with SessionLocal() as session:
+        row = (
+            await session.execute(
+                select(ModelVersionRow)
+                .where(
+                    ModelVersionRow.node_id == ack.node_id,
+                    ModelVersionRow.contaminant_id == ack.contaminant_id,
+                    ModelVersionRow.version == ack.requested_version,
+                )
+                .order_by(ModelVersionRow.pushed_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            logger.warning(
+                "model ack for a push we have no record of: node=%s contaminant=%s version=%s",
+                ack.node_id, ack.contaminant_id, ack.requested_version,
+            )
+            return
+
+        row.acked_at = datetime.now(timezone.utc)
+        row.running = ack.verified
+        row.shadow_disagreement_rate = ack.shadow_disagreement_rate
+
+        if ack.verified:
+            # only one version should read as "running" per (node, contaminant) at a time
+            others = (
+                await session.execute(
+                    select(ModelVersionRow).where(
+                        ModelVersionRow.node_id == ack.node_id,
+                        ModelVersionRow.contaminant_id == ack.contaminant_id,
+                        ModelVersionRow.id != row.id,
+                        ModelVersionRow.running.is_(True),
+                    )
+                )
+            ).scalars().all()
+            for other in others:
+                other.running = False
+
+        await session.commit()
+    logger.info(
+        "model update ack: node=%s contaminant=%s running=%s verified=%s disagreement=%s",
+        ack.node_id, ack.contaminant_id, ack.running_version, ack.verified, ack.shadow_disagreement_rate,
+    )
+
+
 def build_ingestion_service() -> MqttService:
     settings = get_settings()
 
@@ -271,12 +321,15 @@ def build_ingestion_service() -> MqttService:
             await handle_alert(payload)
         elif kind == "status":
             await handle_status(node_id, payload)
+        elif kind == "model" and len(parts) >= 4 and parts[3] == "ack":
+            await handle_model_ack(payload)
 
     subscriptions = [
         (TOPIC_REGISTER_SUB, 1),
         (TOPIC_SUMMARY_SUB, 1),
         (TOPIC_ALERT_SUB, 2),
         (TOPIC_STATUS_SUB, 1),
+        (TOPIC_MODEL_ACK_SUB, 2),
     ]
     service = MqttService(settings, subscriptions, dispatch)
     return service

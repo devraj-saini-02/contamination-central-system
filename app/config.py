@@ -25,6 +25,11 @@ class Settings(BaseSettings):
 
     registry_path: str = str(REPO_ROOT / "config" / "registry.json")
 
+    # Where nodes download pushed model files from (§6: HTTP download, the closer analog to a
+    # real OTA flow) -- this service's own externally-reachable base URL.
+    public_url: str = "http://localhost:8000"
+    model_files_dir: str = str(REPO_ROOT / "model_files")
+
 
 @lru_cache
 def get_settings() -> Settings:
