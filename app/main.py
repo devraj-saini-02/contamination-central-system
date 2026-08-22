@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app import mqtt_ingestion
-from app.api import edges, incidents, models, nodes, register, sensor_health, sim_proxy
+from app.api import admin, edges, incidents, models, nodes, register, sensor_health, sim_proxy
 from app.config import get_settings
 from app.mqtt_ingestion import build_ingestion_service
 from app.retention import run_retention_cleanup
@@ -65,6 +65,7 @@ app.include_router(incidents.router)
 app.include_router(models.router)
 app.include_router(sensor_health.router)
 app.include_router(sim_proxy.router)
+app.include_router(admin.router)
 
 
 @app.get("/health")
