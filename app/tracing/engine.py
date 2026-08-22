@@ -107,11 +107,14 @@ async def _edges_among(session: AsyncSession, node_ids: set[str]) -> list[Edge]:
 
 
 async def _has_coverage(session: AsyncSession, node_id: str, contaminant_id: str, t_start: datetime, t_end: datetime) -> bool:
-    """Whether at least one reading actually falls in this window — distinct from get_mass()
-    returning 0.0, which is indistinguishable between "genuinely near-zero" and "no data here
-    at all" (e.g. the window reaches back before this node existed). Callers that treat 0 as a
+    """Whether at least one *trustworthy* (sensor_health="OK") reading falls in this window —
+    distinct from get_mass() returning 0.0, which is indistinguishable between "genuinely
+    near-zero", "no data here at all" (e.g. the window reaches back before this node existed),
+    and "every reading in this window is FAILED/SUSPECT" (§10: a faulted sensor's corrupted
+    values must not silently masquerade as a trustworthy zero). Callers that treat 0 as a
     meaningful expectation (the headwater baseline fallback in run_tracing) need this guard, or
-    a brand-new node's very first reading looks like it exceeds "expected" by an infinite margin."""
+    a brand-new node's very first reading — or a node mid-fault — looks like it exceeds
+    "expected" by an infinite margin."""
     count = (
         await session.execute(
             select(func.count())
@@ -120,6 +123,7 @@ async def _has_coverage(session: AsyncSession, node_id: str, contaminant_id: str
             .where(
                 SummaryWindow.node_id == node_id,
                 ContaminantReadingRow.contaminant_id == contaminant_id,
+                ContaminantReadingRow.sensor_health == "OK",
                 SummaryWindow.t_end > t_start,
                 SummaryWindow.t_end <= t_end,
             )
@@ -129,6 +133,12 @@ async def _has_coverage(session: AsyncSession, node_id: str, contaminant_id: str
 
 
 async def get_mass(session: AsyncSession, node_id: str, contaminant_id: str, t_start: datetime, t_end: datetime) -> float:
+    """Sums mass_g for readings with sensor_health="OK" only — a FAILED/SUSPECT reading (stuck,
+    dropped out, or spiked, see core/health.py) reports a corrupted value, and trusting it in a
+    mass-balance sum would turn a broken sensor into a phantom contamination event or a phantom
+    "unexplained loss". Excluding it entirely (rather than down-weighting) is deliberate:
+    _has_coverage() is what tells callers when a window has too little trustworthy data to
+    evaluate at all, so a silently-lower sum here doesn't get misread as "less mass arrived"."""
     result = await session.execute(
         select(func.coalesce(func.sum(ContaminantReadingRow.mass_g), 0.0))
         .select_from(ContaminantReadingRow)
@@ -136,6 +146,7 @@ async def get_mass(session: AsyncSession, node_id: str, contaminant_id: str, t_s
         .where(
             SummaryWindow.node_id == node_id,
             ContaminantReadingRow.contaminant_id == contaminant_id,
+            ContaminantReadingRow.sensor_health == "OK",
             SummaryWindow.t_end > t_start,
             SummaryWindow.t_end <= t_end,
         )

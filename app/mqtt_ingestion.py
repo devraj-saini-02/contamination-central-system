@@ -7,7 +7,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.config import get_settings
 from app.database import SessionLocal
-from app.models import Alert, ContaminantReadingRow, Edge, ModelVersionRow, Node, NodeStatus, SummaryWindow
+from app.models import Alert, ContaminantReadingRow, Edge, ModelVersionRow, Node, NodeStatus, SensorHealthEvent, SummaryWindow
 from app.mqtt_service import MqttService
 from app.mqtt_topics import (
     TOPIC_ALERT_SUB,
@@ -173,6 +173,36 @@ async def handle_register(mqtt: MqttService, raw_payload: bytes) -> None:
     await mqtt.publish(topic_register_ack(ack.node_id), ack, qos=1)
 
 
+async def _track_sensor_health_transition(session, node_id: str, contaminant_id: str, health_state: str, at) -> None:
+    """Opens/closes SensorHealthEvent rows as a node's reported sensor_health changes, so the
+    dashboard's health/replacement queue (§10.2c) has real degradation history to show, not just
+    a snapshot of the latest reading."""
+    open_event = (
+        await session.execute(
+            select(SensorHealthEvent)
+            .where(
+                SensorHealthEvent.node_id == node_id,
+                SensorHealthEvent.contaminant_id == contaminant_id,
+                SensorHealthEvent.resolved_at.is_(None),
+            )
+            .order_by(SensorHealthEvent.detected_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+    if health_state == "OK":
+        if open_event is not None:
+            open_event.resolved_at = at
+        return
+
+    if open_event is not None:
+        if open_event.health_state == health_state:
+            return  # still the same degraded state, nothing new to record
+        open_event.resolved_at = at  # state changed (e.g. SUSPECT -> FAILED); close the old one
+
+    session.add(SensorHealthEvent(node_id=node_id, contaminant_id=contaminant_id, health_state=health_state, detected_at=at))
+
+
 async def handle_summary(raw_payload: bytes) -> None:
     payload = SummaryPayload.model_validate_json(raw_payload)
     async with SessionLocal() as session:
@@ -218,6 +248,7 @@ async def handle_summary(raw_payload: bytes) -> None:
                     model_ver=c.model_ver,
                 )
             )
+            await _track_sensor_health_transition(session, payload.node_id, c.id, c.sensor_health, payload.t_end)
         try:
             await session.commit()
         except IntegrityError:
