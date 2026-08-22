@@ -18,7 +18,13 @@ from app.models import tables  # noqa: E402,F401
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
 config = context.config
-config.set_main_option("sqlalchemy.url", get_settings().database_url)
+# Config is backed by configparser, which treats a literal "%" as the start of an
+# interpolation sequence (e.g. %(name)s) even when set programmatically like this -- a
+# URL-encoded special character in the DB password (e.g. "%40" for "@") trips it with
+# "invalid interpolation syntax". Escaping "%" as "%%" here is configparser's own documented
+# way to represent a literal percent sign; it's correctly un-escaped back to a single "%" by
+# both get_main_option() (used below in offline mode) and get_section() (used in online mode).
+config.set_main_option("sqlalchemy.url", get_settings().database_url.replace("%", "%%"))
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
