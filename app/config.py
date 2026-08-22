@@ -36,10 +36,15 @@ class Settings(BaseSettings):
     # any origin -- fine for a hackathon on localhost, not for a public deployment.
     cors_allow_origins: str = "*"
 
-    # Sized down from what local concurrent-registration testing used, since managed Postgres
-    # free tiers (e.g. Supabase) cap total connections much lower than a local instance would.
-    db_pool_size: int = 5
-    db_max_overflow: int = 5
+    # Sized down from what local concurrent-registration testing used (30/20), since managed
+    # Postgres free tiers (e.g. Supabase) cap total connections much lower than a local instance
+    # would -- but 5/5 proved too small under a real running 15-node simulation's sustained MQTT
+    # alert/status/summary traffic (production saw QueuePool timeouts). This is a middle ground;
+    # if a deploy still sees pool timeouts under a larger node_count, raise these via the
+    # DB_POOL_SIZE/DB_MAX_OVERFLOW env vars rather than editing the default, and confirm it stays
+    # under the DB provider's actual connection cap first.
+    db_pool_size: int = 10
+    db_max_overflow: int = 10
 
 
 @lru_cache

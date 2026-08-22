@@ -34,19 +34,22 @@ PARENT_WAIT_RETRIES = 8
 PARENT_WAIT_DELAY_S = 0.5
 
 
-async def _wait_for_parent(session, parent_id: str) -> Node | None:
+async def _wait_for_parent(parent_id: str) -> bool:
     """Nodes register concurrently (orchestrator starts every Virtual Node's registration at
     once), so a child's manifest can arrive before its own parent has finished registering — a
     real fleet wouldn't guarantee power-on order either. Retry briefly instead of silently
-    dropping the edge on a same-instant race; session.get() issues a fresh query each call, so
-    this sees the parent's row as soon as its own registration transaction commits."""
+    dropping the edge on a same-instant race. Polls in its own short-lived session rather than
+    the caller's open transaction: that transaction stays uncommitted (and its connection checked
+    out) for the whole registration handler, so sleeping between retries on it would hold a pool
+    connection hostage for the entire wait -- under a full-fleet concurrent registration burst,
+    that alone was enough to exhaust the pool before any handler got to do its actual work."""
     for attempt in range(PARENT_WAIT_RETRIES):
-        parent = await session.get(Node, parent_id)
-        if parent is not None:
-            return parent
+        async with SessionLocal() as probe:
+            if await probe.get(Node, parent_id) is not None:
+                return True
         if attempt < PARENT_WAIT_RETRIES - 1:
             await asyncio.sleep(PARENT_WAIT_DELAY_S)
-    return None
+    return False
 
 
 async def resolve_node_id(session, manifest: RegistrationManifest) -> str:
@@ -104,10 +107,10 @@ async def process_registration(manifest: RegistrationManifest) -> RegistrationAc
 
         assigned_parent_ids: list[str] = []
         for parent_id in manifest.claimed_parent_ids:
-            parent = await _wait_for_parent(session, parent_id)
-            if parent is None:
+            if not await _wait_for_parent(parent_id):
                 logger.warning("register %s claims unknown parent %s (gave up waiting); skipping edge", node_id, parent_id)
                 continue
+            parent = await session.get(Node, parent_id)
             existing_edge = (
                 await session.execute(
                     select(Edge).where(Edge.parent_node_id == parent_id, Edge.child_node_id == node_id)
